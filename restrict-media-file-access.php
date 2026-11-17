@@ -3,7 +3,7 @@
  * The restrict-media-file-access bootstrap file.
  *
  * @since       1.0.0
- * @version     1.0.0
+ * @version     1.6.0
  * @package     A8C\SpecialProjects\Plugins
  * @author      WordPress.com Special Projects
  * @license     GPL-3.0-or-later
@@ -14,7 +14,7 @@
  * Plugin Name:             Restrict Media File Access
  * Plugin URI:              https://wpspecialprojects.wordpress.com
  * Description:             Restrict access to media files by custom access control.
- * Version:                 1.5.1
+ * Version:                 1.6.0
  * Requires at least:       6.4
  * Tested up to:            6.8
  * Requires PHP:            8.3
@@ -90,6 +90,8 @@ register_activation_hook(
 		if ( ! file_exists( $protected_dir ) ) {
 			wp_mkdir_p( $protected_dir );
 		}
+
+		rmfa_ensure_protected_dir_htaccess();
 
 		// Check if we need to run the initial attachment tracking setup
 		$has_run_initial_setup = get_option( '_rmfa_initial_setup_completed', false );

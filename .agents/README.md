@@ -10,7 +10,7 @@ This folder contains plugin-specific skills for AI coding assistants working on 
 └── skills/
     ├── rmfa-architecture/SKILL.md       ← Plugin internals, service pattern, REST API, cron, settings
     ├── rmfa-file-protection/SKILL.md    ← File protection pipeline, URL rewriting, access control, serving
-    └── rmfa-testing/SKILL.md            ← Test frameworks, commands, writing new tests
+    └── rmfa-testing/SKILL.md            ← Smoke suite, Codeception, commands, writing new tests
 ```
 
 ## Which Skill to Use
@@ -19,7 +19,7 @@ This folder contains plugin-specific skills for AI coding assistants working on 
 |------|-------|
 | Working on plugin PHP (services, REST API, cron, settings) | `rmfa-architecture` |
 | File protection, URL rewriting, access control, or file serving | `rmfa-file-protection` |
-| Writing or running tests | `rmfa-testing` |
+| Writing or running tests (smoke suite, Codeception) | `rmfa-testing` |
 
 ## Recommended: WordPress Agent-Skills
 

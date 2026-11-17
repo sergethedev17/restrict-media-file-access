@@ -13,6 +13,31 @@ defined( 'ABSPATH' ) || exit;
 class AttachmentsProtector {
 
 	/**
+	 * Cache-Control sent with a successfully served file.
+	 *
+	 * The browser may store the bytes but must revalidate them before every
+	 * reuse, so an unchanged file answers `304` and only a changed one pays for
+	 * the payload again. The access check runs before the conditional branch, so
+	 * a stored copy never outlives the permission that produced it; `private`
+	 * keeps shared caches out of the picture entirely.
+	 *
+	 * @since   1.6.0
+	 * @version 1.6.0
+	 */
+	private const CACHE_CONTROL_ALLOWED = 'private, no-cache';
+
+	/**
+	 * Cache-Control sent with a denied response.
+	 *
+	 * Nothing is stored: a placeholder or a `404` must never be pinned in a
+	 * cache and then outlive the denial or the grant that follows it.
+	 *
+	 * @since   1.6.0
+	 * @version 1.6.0
+	 */
+	private const CACHE_CONTROL_DENIED = 'private, no-store, max-age=0';
+
+	/**
 	 * Initialize the rewrite rules.
 	 *
 	 * @since   1.0.0
@@ -32,6 +57,44 @@ class AttachmentsProtector {
 
 		// Prevent WordPress canonical redirect from adding trailing slashes to protected file URLs.
 		add_filter( 'redirect_canonical', array( $this, 'prevent_protected_file_redirect' ), 10, 2 );
+
+		// Serve a restricted attachment's page through the same pipeline, before
+		// redirect_canonical() (priority 10) can redirect the page to the file URL.
+		add_action( 'template_redirect', array( $this, 'handle_attachment_page' ), 0 );
+	}
+
+	/**
+	 * Serve a restricted attachment's page like its protected file URL.
+	 *
+	 * With attachment pages disabled, redirect_canonical() 301s the attachment
+	 * page to wp_get_attachment_url(), which for a restricted file is the
+	 * protected-files URL. That redirect exposes the hash and adds a hop, so a
+	 * restricted attachment page is served here instead: the same access check
+	 * and the same denied response as the file URL, with no redirect.
+	 *
+	 * @since   1.6.0
+	 * @version 1.6.0
+	 *
+	 * @return void
+	 */
+	public function handle_attachment_page(): void {
+		if ( ! is_attachment() || is_feed() || is_embed() ) {
+			return;
+		}
+
+		$attachment_id = (int) get_queried_object_id();
+
+		if ( $attachment_id <= 0 || ! rmfa_is_media_restricted( $attachment_id ) ) {
+			return;
+		}
+
+		$file_hash = rmfa_get_media_protected_file_hash( $attachment_id );
+
+		if ( empty( $file_hash ) ) {
+			return;
+		}
+
+		$this->serve_request( (string) $file_hash );
 	}
 
 	/**
@@ -137,10 +200,13 @@ class AttachmentsProtector {
 	}
 
 	/**
-	 * Serve the denied-access placeholder and exit, without re-checking access.
+	 * Serve the denied-access response and exit, without re-checking access.
+	 *
+	 * The response honours the file's deny mode, so an integration that calls
+	 * this directly still gets the configured 404, 403 or placeholder image.
 	 *
 	 * @since   1.5.0
-	 * @version 1.5.0
+	 * @version 1.6.0
 	 *
 	 * @param string $protected_file The `{segment}` of the protected-file URL (hash with optional size suffix).
 	 *
@@ -175,21 +241,43 @@ class AttachmentsProtector {
 	/**
 	 * Check if a file is protected.
 	 *
+	 * An unknown hash has no attachment to consult, so it is protected by
+	 * default — the denial response then answers 404 for everyone.
+	 *
 	 * @since   1.0.0
-	 * @version 1.0.0
+	 * @version 1.6.0
 	 *
 	 * @param string $protected_file The protected file being accessed.
 	 * @return bool
 	 */
 	private function is_file_protected( string $protected_file ): bool {
-		return apply_filters( 'restrict_media_file_access_protect_file', ! is_user_logged_in(), $protected_file );
+		$attachment_id = $this->resolve_attachment_id( $protected_file );
+		$default       = null === $attachment_id ? true : ! ( new AttachmentsAccess() )->user_can_access( $attachment_id );
+
+		return (bool) apply_filters( 'restrict_media_file_access_protect_file', $default, $protected_file );
 	}
 
 	/**
-	 * Serve a protected file.
+	 * Resolve the attachment ID behind a protected file name.
+	 *
+	 * @since   1.6.0
+	 * @version 1.6.0
+	 *
+	 * @param string $protected_file The protected file being accessed.
+	 *
+	 * @return int|null The attachment ID, or null when the hash is unknown.
+	 */
+	private function resolve_attachment_id( string $protected_file ): ?int {
+		[ $hash ] = $this->extract_hash_and_size_suffix( $protected_file );
+
+		return rmfa_find_attachment_id_by_hash( $hash );
+	}
+
+	/**
+	 * Serve the denied response for a protected file and exit.
 	 *
 	 * @since   1.0.0
-	 * @version 1.0.0
+	 * @version 1.6.0
 	 *
 	 * @param string $protected_file The protected file being accessed.
 	 * @return void
@@ -197,6 +285,72 @@ class AttachmentsProtector {
 	 * @SuppressWarnings("PHPMD.ExitExpression")
 	 */
 	private function serve_file_as_protected( string $protected_file ): void {
+		$attachment_id = $this->resolve_attachment_id( $protected_file );
+
+		if ( null === $attachment_id ) {
+			$this->serve_not_found();
+			return;
+		}
+
+		$mode = ( new AttachmentsAccess() )->get_deny_mode( $attachment_id );
+
+		// A 1x1 GIF is not a usable stand-in for a document, so fall back to 404
+		// unless an integration replaces the placeholder with its own bytes.
+		if ( 'pixel' === $mode && ! $this->is_image_attachment( $attachment_id ) && ! $this->has_placeholder_filters() ) {
+			$mode = '404';
+		}
+
+		if ( '403' === $mode ) {
+			$this->serve_forbidden();
+			return;
+		}
+
+		if ( 'pixel' === $mode ) {
+			$this->serve_pixel( $protected_file );
+			return;
+		}
+
+		$this->serve_not_found();
+	}
+
+	/**
+	 * Check whether an attachment is an image.
+	 *
+	 * @since   1.6.0
+	 * @version 1.6.0
+	 *
+	 * @param int $attachment_id The attachment ID.
+	 *
+	 * @return bool True if the attachment is an image, false otherwise.
+	 */
+	private function is_image_attachment( int $attachment_id ): bool {
+		return str_starts_with( (string) get_post_mime_type( $attachment_id ), 'image/' );
+	}
+
+	/**
+	 * Check whether an integration supplies its own denied-access placeholder.
+	 *
+	 * @since   1.6.0
+	 * @version 1.6.0
+	 *
+	 * @return bool True if a placeholder filter is registered, false otherwise.
+	 */
+	private function has_placeholder_filters(): bool {
+		return has_filter( 'restrict_media_file_access_protected_headers' ) || has_filter( 'restrict_media_file_access_protected_image' );
+	}
+
+	/**
+	 * Serve the denied-access placeholder image and exit.
+	 *
+	 * @since   1.0.0
+	 * @version 1.6.0
+	 *
+	 * @param string $protected_file The protected file being accessed.
+	 * @return void
+	 *
+	 * @SuppressWarnings("PHPMD.ExitExpression")
+	 */
+	private function serve_pixel( string $protected_file ): void {
 		/**
 		 * Filter the headers sent for protected files
 		 *
@@ -206,10 +360,9 @@ class AttachmentsProtector {
 		$headers = apply_filters(
 			'restrict_media_file_access_protected_headers',
 			array(
-				'Content-Type'        => 'image/gif',
-				'Cache-Control'       => 'no-store, no-cache, must-revalidate, max-age=0',
-				'Cache-Control-Extra' => 'post-check=0, pre-check=0',
-				'Pragma'              => 'no-cache',
+				'Content-Type'  => 'image/gif',
+				'Cache-Control' => self::CACHE_CONTROL_DENIED,
+				'Pragma'        => 'no-cache',
 			),
 			$protected_file
 		);
@@ -240,6 +393,66 @@ class AttachmentsProtector {
 
 		// phpcs:ignore
 		echo base64_decode( $image_data, true );
+		// phpcs:ignore
+		exit;
+	}
+
+	/**
+	 * Serve a 404 response and exit.
+	 *
+	 * @since   1.6.0
+	 * @version 1.6.0
+	 *
+	 * @return void
+	 */
+	private function serve_not_found(): void {
+		$this->send_denied_response( 404, 'Not found' );
+	}
+
+	/**
+	 * Serve a 403 response and exit.
+	 *
+	 * @since   1.6.0
+	 * @version 1.6.0
+	 *
+	 * @return void
+	 */
+	private function serve_forbidden(): void {
+		$this->send_denied_response( 403, 'Forbidden' );
+	}
+
+	/**
+	 * Send a denied-access response and exit.
+	 *
+	 * Not wp_die(): it sends its own Cache-Control and an HTML body, which would
+	 * overwrite the no-store headers this response must carry.
+	 *
+	 * @since   1.6.0
+	 * @version 1.6.0
+	 *
+	 * @param int    $status The HTTP status code.
+	 * @param string $body   The plain-text body.
+	 *
+	 * @return void
+	 *
+	 * @SuppressWarnings("PHPMD.ExitExpression")
+	 */
+	private function send_denied_response( int $status, string $body ): void {
+		status_header( $status );
+		header( 'Content-Type: text/plain; charset=utf-8' );
+		header( 'Cache-Control: ' . self::CACHE_CONTROL_DENIED );
+		header( 'Pragma: no-cache' );
+		header( 'Vary: Authorization', false );
+
+		// Clear any output buffers, exactly like serve_file() and the
+		// substitute-contents path, so buffered markup does not leak with the
+		// status line.
+		while ( ob_get_level() ) {
+			ob_end_clean();
+		}
+
+		// phpcs:ignore
+		echo $body;
 		// phpcs:ignore
 		exit;
 	}
@@ -993,15 +1206,16 @@ class AttachmentsProtector {
 	}
 
 	/**
-	 * Send headers preventing shared caches from storing served file responses.
+	 * Send the cache headers for a served file response.
 	 *
 	 * The same protected file URL returns either the real file bytes or a
-	 * placeholder depending on the requester's authentication, so a shared or
-	 * edge cache storing an authenticated response would leak restricted
-	 * content to anonymous visitors.
+	 * placeholder depending on the requester's authentication. The browser may
+	 * keep the allowed response but has to revalidate it every time, so a shared
+	 * or edge cache — held off by `private` and `Vary: Authorization` — never
+	 * gets a copy to serve to a differently-authorized requester.
 	 *
 	 * @since   1.2.0
-	 * @version 1.3.0
+	 * @version 1.6.0
 	 *
 	 * @param int    $attachment_id The attachment ID being served.
 	 * @param string $file_path     Absolute path to the file being served.
@@ -1012,15 +1226,18 @@ class AttachmentsProtector {
 		/**
 		 * Filter the Cache-Control header sent with successfully served file responses.
 		 *
-		 * The default forbids all caching because the same URL returns either the
-		 * real bytes or a placeholder depending on the requester's authentication.
-		 * Only relax this when every credential involved is part of the URL itself
-		 * (e.g. an access token query argument), so caches cannot serve one
-		 * requester's response to a differently-authorized requester. This filter
-		 * also runs for substitute-content responses, whose bytes may be
-		 * personalized per request (e.g. watermarks from a
-		 * `restrict_media_file_access_serve_contents` callback) — keep the
-		 * no-store default in that case regardless of how credentials are carried.
+		 * The default lets the browser store the bytes but forces a revalidation
+		 * before every reuse (`private, no-cache`). The access check runs before
+		 * the conditional branch, so a revoked user gets the denied response
+		 * instead of a `304`. Relaxing this to a positive `max-age` trades that
+		 * guarantee for fewer requests: the browser then reuses the bytes without
+		 * asking, so a revocation goes unnoticed until the freshness window ends.
+		 * This filter also runs for substitute-content responses, whose bytes may
+		 * be personalized per request (e.g. watermarks from a
+		 * `restrict_media_file_access_serve_contents` callback) — return
+		 * `private, no-store, max-age=0` in that case, and disable the validators
+		 * through `restrict_media_file_access_etag`, so personalized bytes are
+		 * never revalidated against the on-disk file.
 		 *
 		 * @since 1.3.0
 		 *
@@ -1030,7 +1247,7 @@ class AttachmentsProtector {
 		 */
 		$cache_control = apply_filters(
 			'restrict_media_file_access_serve_cache_control',
-			'private, no-store, max-age=0',
+			self::CACHE_CONTROL_ALLOWED,
 			$attachment_id,
 			$file_path
 		);

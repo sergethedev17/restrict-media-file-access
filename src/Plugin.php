@@ -94,20 +94,22 @@ class Plugin {
 	 */
 	protected function initialize(): void {
 		$this->services = array(
-			'self-update'           => new SelfUpdate(),
-			'cron'                  => new Cron(),
-			'settings'              => new Settings(),
-			'attachments-protector' => new AttachmentsProtector(),
-			'jetpack-compatibility' => new JetpackCompatibility(),
-			'attachments'           => new Attachments(),
-			'attachments-admin'     => new AttachmentsAdmin(),
-			'attachments-upload'    => new AttachmentsUpload(),
-			'attachments-removal'   => new AttachmentsRemoval(),
-			'rewrite-rules'         => new RewriteRules(),
-			'cache-cleanup'         => new CacheCleanup(),
-			'attachments-tracking'  => new AttachmentsTracking(),
-			'rest-api'              => new RestApi(),
-			'auto-restrict'         => new AttachmentsAutoRestrict(),
+			'self-update'              => new SelfUpdate(),
+			'cron'                     => new Cron(),
+			'settings'                 => new Settings(),
+			'attachments-protector'    => new AttachmentsProtector(),
+			'attachments-access'       => new AttachmentsAccess(),
+			'attachments-access-admin' => new AttachmentsAccessAdmin(),
+			'jetpack-compatibility'    => new JetpackCompatibility(),
+			'attachments'              => new Attachments(),
+			'attachments-admin'        => new AttachmentsAdmin(),
+			'attachments-upload'       => new AttachmentsUpload(),
+			'attachments-removal'      => new AttachmentsRemoval(),
+			'rewrite-rules'            => new RewriteRules(),
+			'cache-cleanup'            => new CacheCleanup(),
+			'attachments-tracking'     => new AttachmentsTracking(),
+			'rest-api'                 => new RestApi(),
+			'auto-restrict'            => new AttachmentsAutoRestrict(),
 		);
 
 		foreach ( $this->services as $service ) {
@@ -129,6 +131,11 @@ class Plugin {
 			restrict_media_file_access_output_requirements_error( $is_active );
 			return;
 		}
+
+		// The activation hook does not run on a plugin update, so an upgraded
+		// install would keep serving already-protected files at their physical
+		// path. The helper returns after a single stat when the guard exists.
+		rmfa_ensure_protected_dir_htaccess();
 
 		$this->initialize();
 	}

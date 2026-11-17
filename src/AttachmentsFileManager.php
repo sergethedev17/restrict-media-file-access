@@ -80,7 +80,7 @@ class AttachmentsFileManager {
 	 * Move file to protected directory.
 	 *
 	 * @since   1.0.0
-	 * @version 1.0.0
+	 * @version 1.6.0
 	 *
 	 * @param int                $attachment_id Attachment ID.
 	 * @param array<string,bool> $options The options: update_post (bool).
@@ -89,7 +89,11 @@ class AttachmentsFileManager {
 	 */
 	private function move_to_protected_directory( int $attachment_id, array $options = array() ): bool {
 		$file_path = get_attached_file( $attachment_id );
-		if ( false === $file_path ) {
+
+		// Fail closed: moving the file into a directory that still serves direct
+		// requests would leave the protected bytes web-reachable.
+		if ( false === $file_path || ! rmfa_ensure_protected_dir_htaccess() ) {
+			rmfa_log_error( 'rmfa_move_to_protected_directory_preconditions_failed:' . $attachment_id );
 			return false;
 		}
 

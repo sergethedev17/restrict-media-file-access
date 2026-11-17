@@ -1,0 +1,110 @@
+/**
+ * File access meta box styles.
+ *
+ * @since   1.6.0
+ * @version 1.6.0
+ */
+
+.rmfa-access-notice {
+	margin: 0 0 8px;
+	color: #646970;
+}
+
+.rmfa-access-label {
+	margin: 12px 0 4px;
+}
+
+.rmfa-access-users {
+	margin-bottom: 8px;
+}
+
+.rmfa-access-user-chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px;
+	margin: 0 0 6px;
+	padding: 0;
+	list-style: none;
+}
+
+.rmfa-access-user-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	margin: 0;
+	padding: 1px 2px 1px 8px;
+	border: 1px solid #c3c4c7;
+	border-radius: 12px;
+	background: #f6f7f7;
+	font-size: 12px;
+	line-height: 1.8;
+}
+
+.rmfa-access-user-remove {
+	padding: 0 4px;
+	border: 0;
+	background: none;
+	color: #646970;
+	cursor: pointer;
+	font-size: 14px;
+	line-height: 1;
+}
+
+.rmfa-access-user-remove:hover,
+.rmfa-access-user-remove:focus {
+	color: #d63638;
+}
+
+.rmfa-access-user-search {
+	width: 100%;
+}
+
+.rmfa-access-user-results {
+	margin: 4px 0 0;
+	padding: 0;
+	list-style: none;
+}
+
+.rmfa-access-user-results:empty {
+	display: none;
+}
+
+.rmfa-access-user-result {
+	display: block;
+	width: 100%;
+	padding: 4px 6px;
+	border: 0;
+	background: none;
+	text-align: left;
+	cursor: pointer;
+}
+
+.rmfa-access-user-result:hover,
+.rmfa-access-user-result:focus {
+	background: #f0f0f1;
+}
+
+.rmfa-access-user-empty {
+	padding: 4px 6px;
+	color: #646970;
+}
+
+.rmfa-access-roles {
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+.rmfa-access-roles legend {
+	padding: 0;
+	margin: 12px 0 4px;
+}
+
+.rmfa-access-role {
+	display: block;
+	margin-bottom: 2px;
+}
+
+#rmfa_deny_mode {
+	width: 100%;
+}

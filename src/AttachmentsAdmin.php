@@ -63,7 +63,7 @@ class AttachmentsAdmin {
 	 * Add custom field to attachment edit form.
 	 *
 	 * @since   1.0.0
-	 * @version 1.0.0
+	 * @version 1.6.0
 	 *
 	 * @param array<string,mixed> $form_fields Array of form fields.
 	 * @param \WP_Post            $post Post object.
@@ -152,7 +152,54 @@ class AttachmentsAdmin {
 			'helps' => $helps_text,
 		);
 
+		if ( current_user_can( rmfa_manage_file_access_capability() ) ) {
+			$form_fields['file_access_summary'] = array(
+				'label' => __( 'File access', 'restrict-media-file-access' ),
+				'input' => 'html',
+				'html'  => $this->get_file_access_summary_html( $post ),
+			);
+		}
+
 		return $form_fields;
+	}
+
+	/**
+	 * Get the read-only file access summary shown in the media modal.
+	 *
+	 * Mirrors the meta box: an unrestricted file shows the "not restricted
+	 * yet" notice instead of an allow-list count that does not apply.
+	 *
+	 * @since   1.6.0
+	 * @version 1.6.0
+	 *
+	 * @param \WP_Post $post The attachment.
+	 *
+	 * @return string The summary HTML.
+	 */
+	private function get_file_access_summary_html( \WP_Post $post ): string {
+		$link = sprintf(
+			'<a href="%1$s">%2$s</a>',
+			esc_url( (string) get_edit_post_link( $post->ID ) ),
+			esc_html__( 'Edit file access', 'restrict-media-file-access' )
+		);
+
+		if ( ! rmfa_is_media_restricted( $post->ID ) ) {
+			return sprintf(
+				'<p class="rmfa-file-access-summary">%1$s %2$s</p>',
+				esc_html__( 'This file is not restricted yet, so these lists only apply once it is.', 'restrict-media-file-access' ),
+				$link
+			);
+		}
+
+		$summary = sprintf(
+			/* translators: 1: number of users with access, 2: number of roles with access, 3: denied response mode. */
+			__( 'Access: %1$d users, %2$d roles · Denied: %3$s', 'restrict-media-file-access' ),
+			count( AttachmentsAccess::get_access_users( $post->ID ) ),
+			count( AttachmentsAccess::get_access_roles( $post->ID ) ),
+			rmfa_get_file_deny_mode( $post->ID )
+		);
+
+		return sprintf( '<p class="rmfa-file-access-summary">%1$s %2$s</p>', esc_html( $summary ), $link );
 	}
 
 	/**

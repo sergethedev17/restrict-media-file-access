@@ -24,7 +24,8 @@ When a file is "protected", it is:
 1. Physically moved from `wp-content/uploads/YYYY/MM/` to `wp-content/uploads/.protected/YYYY/MM/`.
 2. Assigned a SHA-256 hash stored in post meta `_protected_file_hash`.
 3. Served via a WordPress rewrite rule at `protected-files/{hash}` instead of a direct file URL.
-4. Access-controlled via the `restrict_media_file_access_protect_file` filter (defaults to `! is_user_logged_in()`).
+4. Access-controlled by `AttachmentsAccess::user_can_access()`: unrestricted files keep the logged-in gate; restricted files allow the admin bypass, the uploader, the listed users and the listed roles, and deny everyone else — including when both allow-lists are empty. The `restrict_media_file_access_protect_file` filter can override the final decision.
+5. Guarded on disk by `.protected/.htaccess` (`Require all denied`), written before a file is moved into the directory.
 
 ### Protection Flow (Restrict)
 
@@ -88,10 +89,12 @@ Stored in `_protected_file_hash` post meta. The hash is generated once when a fi
 ### URL Resolution
 
 1. WordPress rewrite rule: `^protected-files/([^/]+)` → `index.php?protected_file=$matches[1]`.
-2. `AttachmentsProtector::handle_protected_file()` picks up the `protected_file` query var on `template_redirect`.
-3. Extracts hash and optional size suffix from the URL.
-4. Looks up attachment ID via `rmfa_find_attachment_id_by_hash()`.
-5. Resolves the physical file path including size variations.
+2. `AttachmentsProtector::handle_protected_file_early()` reads the `protected_file` query var on `parse_request` and serves the request before the main query or template stack run. `restrict_media_file_access_serve_on_parse_request` (default `true`) can disable this and fall back to `handle_protected_file()` on `template_redirect` priority 5.
+3. A restricted attachment page is served through the same pipeline on `template_redirect` priority 0, before `redirect_canonical()` can redirect it to the hash URL.
+4. Extracts hash and optional size suffix from the URL.
+5. Looks up the attachment ID via `resolve_attachment_id()`, which splits off the
+   `-{width}x{height}` suffix and then calls `rmfa_find_attachment_id_by_hash()`.
+6. Resolves the physical file path including size variations.
 
 ### Attachment URL Modification
 
@@ -106,31 +109,46 @@ Stored in `_protected_file_hash` post meta. The hash is generated once when a fi
 ### Access Check
 
 ```php
-$is_protected = apply_filters(
-    'restrict_media_file_access_protect_file',
-    ! is_user_logged_in(),
-    $protected_file
-);
+// AttachmentsProtector::is_file_protected()
+// resolve_attachment_id() strips the -{width}x{height} suffix first, so a sized
+// segment resolves to the same attachment as the full-size one.
+$attachment_id = $this->resolve_attachment_id( $protected_file );
+
+$default = null === $attachment_id
+    ? true // unknown hash: 404 for everyone
+    : ! ( new AttachmentsAccess() )->user_can_access( $attachment_id );
+
+$is_protected = apply_filters( 'restrict_media_file_access_protect_file', $default, $protected_file );
 ```
 
-**Default behavior:** Logged-in users can access protected files; logged-out users cannot.
+**Default behavior:** an unrestricted file still requires a logged-in user. A restricted file is readable by administrators (`manage_options`, filterable via `rmfa_file_access_admin_bypass`), its uploader, the listed users and the listed roles; with empty lists only the first two get in. The filter receives the resolved decision and the `{hash}` segment, and can override it in either direction.
 
-### Protected Response (Access Denied)
+### Denied Response (Access Denied)
 
-Returns a 1x1 transparent GIF with no-cache headers:
-- `Content-Type: image/gif`
-- `Cache-Control: no-store, no-cache, must-revalidate, max-age=0`
-- Customizable via `restrict_media_file_access_protected_headers` and `restrict_media_file_access_protected_image` filters.
+The response follows the deny-mode resolution: the per-file `_rmfa_deny_mode`, then the `rmfa_default_deny_mode` option, then `404`. `pixel` degrades to `404` for non-images unless a placeholder filter is registered. Every denied response is uncacheable: `Cache-Control: private, no-store, max-age=0`, `Pragma: no-cache`, `Vary: Authorization`.
+- `404` — plain-text `Not found`
+- `403` — plain-text `Forbidden`
+- `pixel` — a 1x1 transparent GIF: `Content-Type: image/gif` plus the no-store headers (overridable via `restrict_media_file_access_protected_headers` and `restrict_media_file_access_protected_image`)
+
+An unknown hash answers exactly the same `404` (status, body and headers) as a denied file's `404`, so the URL cannot be used as an existence oracle.
 
 ### Unprotected Response (Access Granted)
 
-1. Determines MIME type via `mime_content_type()`.
-2. Supports HTTP Range requests (partial content / byte serving) for media streaming.
-3. Sets `Accept-Ranges: bytes` header.
-4. For range requests: returns `206 Partial Content` with `Content-Range` header.
-5. Streams file in 8KB chunks.
-6. Fires `restrict_media_file_access_before_serve` action before output.
-7. Disables page caching (`DONOTCACHEPAGE`, `batcache_cancel()`).
+1. Refuses to serve a file that does not resolve inside the uploads directory (`realpath()` on both sides); controlled by `restrict_media_file_access_require_uploads_dir` (default `true`) and answered like a missing file.
+2. Determines MIME type via `mime_content_type()`.
+3. Sends `Cache-Control: private, no-cache`, `Vary: Authorization` and the `A8C-Edge-Cache` header (default `no-cache`, filterable). The browser may store the bytes but revalidates before reuse. Disables page caching (`DONOTCACHEPAGE`, `batcache_cancel()`).
+4. Sends `ETag` / `Last-Modified` and answers `If-None-Match` / `If-Modified-Since` with `304 Not Modified`. The access check has already run, so a revoked user is denied rather than revalidated.
+5. Answers `HEAD` with headers only.
+6. Supports HTTP Range requests: `Accept-Ranges: bytes`, and `206 Partial Content` with `Content-Range` for a range request (an unsatisfiable range is `416`).
+7. Streams the file in 8KB chunks. `restrict_media_file_access_serve_contents` may substitute the bytes (range serving is then disabled).
+8. Fires `restrict_media_file_access_before_serve` before output.
+
+### Entry Points
+
+For integrations that resolve the `protected-files/{segment}` URL themselves:
+
+* `serve_request( string $segment )` — the full pipeline: access check, denied response, file response. Exits for a non-empty segment.
+* `serve_placeholder( string $segment )` — sends the configured denied response without re-running the access check. Exits.
 
 ## Attachment Tracking
 
@@ -158,14 +176,28 @@ Before saving, checks if post content contains wrong URLs (e.g., public URL for 
 
 | Filter | Description |
 |--------|-------------|
-| `restrict_media_file_access_protect_file` | Controls access to protected files. Receives `(bool $protect, string $file)`. |
+| `restrict_media_file_access_protect_file` | Controls access to protected files. Receives `(bool $protect, string $segment)` where `$segment` is the hash with an optional `-{width}x{height}` suffix. |
 | `restrict_media_file_access_protected_headers` | Modify headers sent for access-denied responses. |
 | `restrict_media_file_access_protected_image` | Modify the base64 image data sent for access-denied responses. |
+| `restrict_media_file_access_serve_contents` | Substitute the bytes served for a file. Receives `( $contents, $attachment_id, $file_path, $mime_type )`; a string disables range serving. |
+| `restrict_media_file_access_serve_cache_control` | The `Cache-Control` header for an allowed response (default `private, no-cache`). Receives `( $cache_control, $attachment_id, $file_path )`. |
+| `restrict_media_file_access_serve_on_parse_request` | Serve on `parse_request` (default `true`); `false` falls back to `template_redirect`. |
+| `restrict_media_file_access_a8c_edge_cache` | The `A8C-Edge-Cache` header (default `no-cache`); an empty string suppresses it. |
+| `restrict_media_file_access_require_uploads_dir` | Require the served file to resolve inside uploads (default `true`). Receives `( $require, $file_path )`. |
+| `restrict_media_file_access_etag` | The `ETag` used for conditional requests. Receives `( $etag, $attachment_id, $file_path )`; an empty string disables both validators. |
+| `rmfa_filter_attachment_query` | Attachment query args after listing filtering. Receives `( $args )`. |
+| `rmfa_auto_restrict_on_upload` | Whether a new upload is restricted automatically (default `false`). Receives `( $should_restrict, $attachment_id, $attachment )`. |
 | `rmfa_restricted_file_help_text` | Change the help text on the restriction checkbox. |
 | `rmfa_restricted_file_helps_text` | Change the description text below the checkbox. |
 | `rmfa_restricted_file_is_disabled` | Disable the restriction toggle for specific attachments. |
-| `rmfa_rest_api_restricted_files_access` | Control whether restricted files appear in REST API queries. |
+| `rmfa_file_access_admin_bypass` | Whether the current user bypasses the allow-lists as an administrator. Receives `(bool $bypass, int $attachment_id)`. |
+| `rmfa_file_access_user_can_access` | Final say on whether the current user may read the file. Receives `(bool $allowed, int $attachment_id)`. |
+| `rmfa_file_access_user_can_see_in_library` | Whether the file appears in the current user's media listings. Receives `(bool $allowed, int $attachment_id)`. |
+| `rmfa_file_deny_mode` | The denied response (`404`, `403`, `pixel`). Receives `(string $mode, int $attachment_id)`. |
+| `rmfa_manage_file_access_capability` | Capability required to read and change access lists (default `manage_options`). Receives `(string $capability)`. |
 | `rmfa_api_restricted_meta_box_html` | Customize the restriction activity meta box HTML. |
+
+`rmfa_rest_api_restricted_files_access` was removed in 1.6.0 — restricted files are hidden from listings by `AttachmentsAccess::user_can_see_in_library()`.
 
 ### Actions
 
@@ -189,8 +221,8 @@ Before saving, checks if post content contains wrong URLs (e.g., public URL for 
 
 ## Procedure: Adding a New Access Control Rule
 
-1. Hook into `restrict_media_file_access_protect_file` filter.
-2. The filter receives `(bool $protect, string $protected_file_hash)`.
+1. Prefer `rmfa_file_access_user_can_access` when the rule is about a specific attachment — it receives the resolved decision and the attachment ID.
+2. Fall back to `restrict_media_file_access_protect_file` for a request-level override; it receives `(bool $protect, string $protected_file)` where the segment is the `{hash}` (with an optional `-{width}x{height}` suffix), not the attachment ID.
 3. Return `true` to block access, `false` to allow.
 4. Example: allow access based on user role, membership, or token.
 
@@ -205,10 +237,22 @@ add_filter( 'restrict_media_file_access_protect_file', function ( $protect, $pro
 
 ## Verification
 
-- `composer lint:php` passes.
+- Smoke suite ends `N checks, 0 failures`: `wp eval-file wp-content/plugins/restrict-media-file-access/tests/smoke/file-rbac.php`.
+- Version stamps say `1.6.0`.
+- `composer lint:php:phpcs` reports exactly one pre-existing warning — the unused
+  `$requested_url` parameter in `AttachmentsProtector.php` — and no new ones.
+  The full `composer lint:php` does **not** pass, and did not before this work:
+  `phpmd` reports pre-existing violations in untouched code
+  (`AttachmentsProtector` is a long class, `AttachmentsAutoRestrict` has unused
+  parameters and an else clause), and `phpstan` cannot run under the repo
+  config — `WPCompat`'s `SinceVersionRule` aborts with `No plugin or theme file
+  found while analysing file models/index.php` because `WPCompat.pluginFile` is
+  not set, so it reports nothing useful either way. Judge a change by "no new
+  PHPCS findings" plus the smoke suite below, not by a green `lint:php`.
 - Protected files are physically in `wp-content/uploads/.protected/`.
 - Protected URLs resolve correctly at `protected-files/{hash}`.
-- Logged-in users can access protected files.
-- Logged-out users receive a 1x1 transparent GIF.
+- A restricted file is readable by its admin, uploader, listed users and listed roles; an empty allow-list denies everyone else.
+- A denied request gets the configured mode: `404` by default, or `403` / the 1x1 GIF when set per file or site-wide.
+- An allowed response revalidates (`304`) and is never served to a revoked user.
 - URL replacement works correctly in post content after protect/unprotect.
 - Attachment tracking meta is accurate.

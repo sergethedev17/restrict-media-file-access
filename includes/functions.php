@@ -2,8 +2,10 @@
 
 defined( 'ABSPATH' ) || exit;
 
+use A8C\SpecialProjects\RestrictMediaFileAccess\AttachmentsAccess;
 use A8C\SpecialProjects\RestrictMediaFileAccess\AttachmentsTracking;
 use A8C\SpecialProjects\RestrictMediaFileAccess\AttachmentsFileManager;
+use A8C\SpecialProjects\RestrictMediaFileAccess\Filesystem;
 
 /**
  * Find the attachment ID by hash.
@@ -220,4 +222,141 @@ function rmfa_get_media_ids_with_urls_from_post_content( string $post_content ):
 	$media_ids_with_urls  = $attachments_tracking->get_media_ids_with_urls_from_post_content( $post_content );
 
 	return $media_ids_with_urls;
+}
+
+/**
+ * Get the capability required to manage per-file access lists.
+ *
+ * @since   1.6.0
+ * @version 1.6.0
+ *
+ * @return string The capability name.
+ */
+function rmfa_manage_file_access_capability(): string {
+	/**
+	 * Filter the capability required to manage per-file access lists.
+	 *
+	 * @since   1.6.0
+	 * @version 1.6.0
+	 *
+	 * @param string $capability The capability name. Default `manage_options`.
+	 *
+	 * @return string The capability name.
+	 */
+	return (string) apply_filters( 'rmfa_manage_file_access_capability', 'manage_options' );
+}
+
+/**
+ * Get the IDs of the users allowed to read a file.
+ *
+ * @since   1.6.0
+ * @version 1.6.0
+ *
+ * @param int $file_id The file ID.
+ *
+ * @return array<int> The allowed user IDs.
+ */
+function rmfa_get_file_access_users( int $file_id ): array {
+	return AttachmentsAccess::get_access_users( $file_id );
+}
+
+/**
+ * Get the roles allowed to read a file.
+ *
+ * @since   1.6.0
+ * @version 1.6.0
+ *
+ * @param int $file_id The file ID.
+ *
+ * @return array<string> The allowed role slugs.
+ */
+function rmfa_get_file_access_roles( int $file_id ): array {
+	return AttachmentsAccess::get_access_roles( $file_id );
+}
+
+/**
+ * Get the response to send when access to a file is denied.
+ *
+ * @since   1.6.0
+ * @version 1.6.0
+ *
+ * @param int $file_id The file ID.
+ *
+ * @return string One of the AttachmentsAccess::DENY_MODES values.
+ */
+function rmfa_get_file_deny_mode( int $file_id ): string {
+	return ( new AttachmentsAccess() )->get_deny_mode( $file_id );
+}
+
+/**
+ * Check whether the current user may read the file through the protected-file URL.
+ *
+ * Unrestricted files are not public here: they still require a logged-in user,
+ * exactly like the protected-file handler.
+ *
+ * @since   1.6.0
+ * @version 1.6.0
+ *
+ * @param int $file_id The file ID.
+ *
+ * @return bool True if the current user may read the file, false otherwise.
+ */
+function rmfa_user_can_access_file( int $file_id ): bool {
+	return ( new AttachmentsAccess() )->user_can_access( $file_id );
+}
+
+/**
+ * Check whether the current user may see a file in a media listing.
+ *
+ * @since   1.6.0
+ * @version 1.6.0
+ *
+ * @param int $file_id The file ID.
+ *
+ * @return bool True if the current user may see the file in a listing, false otherwise.
+ */
+function rmfa_user_can_see_file_in_library( int $file_id ): bool {
+	return ( new AttachmentsAccess() )->user_can_see_in_library( $file_id );
+}
+
+/**
+ * Ensure the protected directory denies direct web access.
+ *
+ * Returns false when the guard cannot be created, so callers that move files
+ * into the directory can refuse to leave them web-reachable.
+ *
+ * @since   1.6.0
+ * @version 1.6.0
+ *
+ * @return bool True if the guard is in place, false otherwise.
+ */
+function rmfa_ensure_protected_dir_htaccess(): bool {
+	$protected_dir = wp_upload_dir()['basedir'] . '/' . RESTRICT_MEDIA_FILE_ACCESS_PROTECTED_DIR;
+	$htaccess_path = $protected_dir . '/.htaccess';
+
+	// Native stat on purpose: this runs on every request, and WP_Filesystem
+	// writes a temp probe file when FS_METHOD is unset.
+	if ( file_exists( $htaccess_path ) ) {
+		return true;
+	}
+
+	if ( ! wp_mkdir_p( $protected_dir ) ) {
+		rmfa_log_error( 'rmfa_ensure_protected_dir_htaccess_mkdir_failed:' . $protected_dir );
+		return false;
+	}
+
+	$contents = '<IfModule mod_authz_core.c>' . "\n"
+		. 'Require all denied' . "\n"
+		. '</IfModule>' . "\n"
+		. '<IfModule !mod_authz_core.c>' . "\n"
+		. 'Order allow,deny' . "\n"
+		. 'Deny from all' . "\n"
+		. '</IfModule>' . "\n";
+
+	if ( false === Filesystem::put_contents( $htaccess_path, $contents ) ) {
+		rmfa_log_error( 'rmfa_ensure_protected_dir_htaccess_write_failed:' . $htaccess_path );
+		return false;
+	}
+
+	return true;
 }

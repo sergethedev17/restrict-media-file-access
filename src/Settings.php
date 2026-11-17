@@ -108,6 +108,16 @@ class Settings {
 			)
 		);
 
+		register_setting(
+			'media',
+			'rmfa_default_deny_mode',
+			array(
+				'type'              => 'string',
+				'default'           => '404',
+				'sanitize_callback' => array( $this, 'sanitize_default_deny_mode' ),
+			)
+		);
+
 		// Add a new section to the Media Settings page
 		add_settings_section(
 			'rmfa_section',
@@ -130,6 +140,15 @@ class Settings {
 			'rmfa_should_old_restricted_file_urls_work_if_file_set_as_public',
 			__( 'Should old restricted file URLs work if file set as public?', 'restrict-media-file-access' ),
 			array( $this, 'render_should_old_restricted_file_urls_work_if_file_set_as_public_field' ),
+			'media',
+			'rmfa_section'
+		);
+
+		// Add a new field to the section
+		add_settings_field(
+			'rmfa_default_deny_mode',
+			__( 'Response when access is denied', 'restrict-media-file-access' ),
+			array( $this, 'render_default_deny_mode_field' ),
 			'media',
 			'rmfa_section'
 		);
@@ -177,6 +196,54 @@ class Settings {
 		<p class="description">
 		<?php esc_html_e( 'When enabled, old restricted file URLs will work even if the file is set as public.', 'restrict-media-file-access' ); ?>
 		</p>
+		<?php
+	}
+
+	/**
+	 * Sanitize the site-wide denied response.
+	 *
+	 * @since   1.6.0
+	 * @version 1.6.0
+	 *
+	 * @param mixed $value The submitted value.
+	 *
+	 * @return string One of the AttachmentsAccess::DENY_MODES values.
+	 */
+	public function sanitize_default_deny_mode( $value ): string {
+		$mode = is_string( $value ) ? sanitize_key( $value ) : '';
+
+		return in_array( $mode, AttachmentsAccess::DENY_MODES, true ) ? $mode : '404';
+	}
+
+	/**
+	 * Render the site-wide denied response field.
+	 *
+	 * @since   1.6.0
+	 * @version 1.6.0
+	 *
+	 * @return void
+	 */
+	public function render_default_deny_mode_field(): void {
+		$current = $this->sanitize_default_deny_mode( get_option( 'rmfa_default_deny_mode', '404' ) );
+		$choices = array(
+			'404'   => __( '404 Not Found', 'restrict-media-file-access' ),
+			'403'   => __( '403 Forbidden', 'restrict-media-file-access' ),
+			'pixel' => __( '1×1 transparent image', 'restrict-media-file-access' ),
+		);
+		?>
+		<fieldset>
+			<legend class="screen-reader-text"><?php esc_html_e( 'Response when access is denied', 'restrict-media-file-access' ); ?></legend>
+			<?php foreach ( $choices as $value => $label ) : ?>
+				<label for="rmfa_default_deny_mode_<?php echo esc_attr( (string) $value ); ?>">
+					<input type="radio" id="rmfa_default_deny_mode_<?php echo esc_attr( (string) $value ); ?>" name="rmfa_default_deny_mode" value="<?php echo esc_attr( (string) $value ); ?>" <?php checked( $current, (string) $value ); ?> />
+					<?php echo esc_html( $label ); ?>
+				</label><br />
+			<?php endforeach; ?>
+			<p class="description">
+			<?php esc_html_e( 'How to answer a request for a restricted file the visitor may not read.', 'restrict-media-file-access' ); ?>
+			<?php esc_html_e( 'The 1×1 image only applies to images; other file types fall back to 404.', 'restrict-media-file-access' ); ?>
+			</p>
+		</fieldset>
 		<?php
 	}
 }

@@ -9,7 +9,7 @@ description: Guides writing and running tests for the Restrict Media File Access
 
 Use this skill when:
 - Writing or modifying tests for the RMFA plugin.
-- Running the test suite (integration or E2E Codeception).
+- Running the smoke suite or the Codeception suites.
 - Debugging test failures.
 - Adding test coverage for new features.
 
@@ -17,21 +17,38 @@ Use this skill when:
 
 | Framework | Location | Purpose |
 |-----------|----------|---------|
-| Codeception + wp-browser | `tests/Integration/` | WordPress integration tests (DB, hooks, filters). |
-| Codeception + wp-browser | `tests/EndToEnd/` | Codeception browser E2E tests. |
+| WP-CLI smoke suite | `tests/smoke/file-rbac.php` | Behavioural checks against real users, roles, attachments and HTTP requests. This is the suite that covers the plugin today. |
+| Codeception + wp-browser | `tests/Integration/` | WordPress integration tests (scaffolded; no test classes yet). |
+| Codeception + wp-browser | `tests/EndToEnd/` | Codeception browser E2E tests (scaffolded; no test classes yet). |
 
 ### Dependencies
 
+- **Smoke suite:** WP-CLI and a WordPress install with the plugin active.
 - **PHP:** `lucatume/wp-browser` ^4.
 - **JS:** `@wordpress/env` ^10.8.
 - **Infrastructure:** Docker (for wp-env), Selenium with Chromium (for E2E).
 
+## Smoke Suite
+
+`tests/smoke/file-rbac.php` is a plain PHP file run with `wp eval-file`. It creates its own fixtures (users, a `rmfa_role`, attachments) on every run, so re-running is safe and leaves them behind.
+
+- Assert with `rmfa_check( 'label', $condition )`; append new checks before the summary lines.
+- The run must end with `N checks, 0 failures`.
+- Do not declare `strict_types`: `wp eval-file` prepends `?>` and the declaration becomes a fatal.
+- Reuse the fixtures that already exist (`$admin_id`, `$owner_id`, `$allowed_id`, `$unlisted_id`, `$role_user`, `$image_id`, `$public_id`, `$access`) instead of redeclaring them.
+- Use `rest_do_request()` for REST and the suite's `rmfa_http()` helper for HTTP. Cookie auth from the CLI does not work.
+- A filter added in this process is invisible to the web container, so test hook-dependent behaviour in-process.
+- The suite asserts the plugin version — bump it with every release (currently `1.6.0`).
+
 ## Running Tests
 
-All commands run from the `restrict-media-file-access/` plugin root:
+All commands run from the `restrict-media-file-access/` plugin root, except the smoke suite, which runs from the WordPress root:
 
 ```bash
-# Start wp-env (required for all tests)
+# Smoke suite (no wp-env needed; plugin must be active)
+wp eval-file wp-content/plugins/restrict-media-file-access/tests/smoke/file-rbac.php
+
+# Start wp-env (required for the Codeception suites)
 npm run wp-env:start
 
 # Integration tests
@@ -213,17 +230,17 @@ Examples:
 
 ## Procedure: Adding Tests for a New Feature
 
-1. Determine if the feature needs integration tests, E2E tests, or both.
-2. **Integration:** Create `tests/Integration/<Name>Test.php`. Test the PHP logic in isolation (file operations, meta, hooks, filters, REST endpoints).
-3. **E2E (Codeception):** Create `tests/EndToEnd/<Name>Cest.php`. Test user-facing behavior in the browser (media library, restriction toggle, file access).
+1. **Smoke first:** append `rmfa_check()` cases to `tests/smoke/file-rbac.php` and prove they fail before writing the fix. This is the suite the project actually runs.
+2. **Integration:** when the case needs isolated DB/hook setup, create `tests/Integration/<Name>Test.php` and test the PHP logic directly. The suite is scaffolded but has no test classes yet.
+3. **E2E (Codeception):** when the case is browser-only, create `tests/EndToEnd/<Name>Cest.php` and test user-facing behaviour (media library, restriction toggle, file access).
 4. Follow the naming and namespace conventions above.
-5. Run the full suite to verify no regressions: `npm run tests:run`.
+5. Run the smoke suite and the relevant Codeception suite to verify no regressions.
 
 ## Verification
 
-- All tests pass: `composer tests:run:integration`.
+- Smoke suite ends `N checks, 0 failures`.
 - No placeholder assertions (`assertTrue( true )`).
-- New code has corresponding test coverage.
+- New code has corresponding smoke coverage; add Codeception tests when the case needs DB/hook isolation or a browser.
 - Tests are isolated — no test depends on another test's side effects.
 - Global state (`$_GET`, `$_SERVER`) is saved/restored.
 - Singletons are properly reset between tests.

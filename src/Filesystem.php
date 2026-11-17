@@ -96,6 +96,21 @@ class Filesystem {
 	}
 
 	/**
+	 * Write a file's contents.
+	 *
+	 * @since   1.6.0
+	 * @version 1.6.0
+	 *
+	 * @param string $file_path Path to the file.
+	 * @param string $contents Contents to write.
+	 *
+	 * @return bool Whether the write was successful.
+	 */
+	public static function put_contents( string $file_path, string $contents ): bool {
+		return self::get_instance()->put_contents( $file_path, $contents );
+	}
+
+	/**
 	 * Get a directory list.
 	 *
 	 * @since   1.0.0
